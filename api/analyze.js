@@ -1,7 +1,10 @@
 // Vercel serverless function: looks at one meal photo and returns what is on the plate.
-// The Anthropic key lives only in the ANTHROPIC_API_KEY environment variable, never in the app.
+// Keys live only in environment variables, never in the app. Use ONE of these:
+//   GEMINI_API_KEY      Free key from Google AI Studio (aistudio.google.com). No card needed. Used first if set.
+//   ANTHROPIC_API_KEY   Paid key from console.anthropic.com. Used if there is no Gemini key.
 //
 // Optional environment variables
+//   GEMINI_MODEL    Override the Gemini model. Defaults to gemini-2.5-flash.
 //   ACCESS_CODE     If set, the app must send the same code (Me tab, "Photo logging code"). Strongly recommended
 //                   because your link is public and every photo costs a little.
 //   ANALYZE_MODEL   Override the model. Defaults to claude-sonnet-5-5.
@@ -87,13 +90,122 @@ const send = (res, status, body) => {
   res.json(body);
 };
 
+
+const GEMINI_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    is_food: { type: 'BOOLEAN' },
+    items: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING' },
+          portion: { type: 'STRING' },
+          grams: { type: 'NUMBER' },
+          kcal: { type: 'NUMBER' },
+          protein_g: { type: 'NUMBER' },
+          carbs_g: { type: 'NUMBER' },
+          fat_g: { type: 'NUMBER' },
+          confidence: { type: 'STRING', enum: ['high', 'medium', 'low'] }
+        },
+        required: ['name', 'portion', 'grams', 'kcal', 'protein_g', 'carbs_g', 'fat_g', 'confidence']
+      }
+    },
+    notes: { type: 'STRING' }
+  },
+  required: ['is_food', 'items']
+};
+
+export function readGemini(data) {
+  const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts
+    ? data.candidates[0].content.parts.map((p) => p.text || '').join('')
+    : '';
+  if (!text) return null;
+  let j;
+  try {
+    j = JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, ''));
+  } catch (_) {
+    return null;
+  }
+  if (!j || typeof j !== 'object') return null;
+  return { is_food: j.is_food !== false, items: Array.isArray(j.items) ? j.items : [], notes: typeof j.notes === 'string' ? j.notes : '' };
+}
+
+// Each provider returns { status, body } where body is { error } or the parsed meal.
+async function viaGemini(key, image, text) {
+  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  let up;
+  try {
+    up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/jpeg', data: image } }, { text }] }],
+        generationConfig: { responseMimeType: 'application/json', responseSchema: GEMINI_SCHEMA, temperature: 0.2, maxOutputTokens: 4096 }
+      }),
+      signal: AbortSignal.timeout(28000)
+    });
+  } catch (_) {
+    return { status: 502, body: { error: 'The food recognition service did not answer in time. Try again.' } };
+  }
+  if (up.status === 429) return { status: 429, body: { error: 'The free daily limit for photo reading is used up or the service is busy. Try again later, or add food by searching.' } };
+  if (up.status === 400 || up.status === 401 || up.status === 403) return { status: 503, body: { error: 'Google rejected the key. Check GEMINI_API_KEY in Vercel.' } };
+  if (up.status === 404) return { status: 503, body: { error: 'That Gemini model name was not found. Set GEMINI_MODEL in Vercel to a current Flash model.' } };
+  if (!up.ok) return { status: 502, body: { error: 'The food recognition service had a problem. Try again.' } };
+  let data;
+  try {
+    data = await up.json();
+  } catch (_) {
+    return { status: 502, body: { error: 'The answer was not readable. Try again.' } };
+  }
+  const out = readGemini(data);
+  if (!out) return { status: 502, body: { error: 'Could not make sense of that photo. Try a clearer one.' } };
+  return { status: 200, body: out };
+}
+
+async function viaClaude(key, image, text) {
+  let up;
+  try {
+    up = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: MODEL(),
+        max_tokens: 1500,
+        system: SYSTEM,
+        tools: [TOOL],
+        tool_choice: { type: 'tool', name: 'log_meal' },
+        messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } }, { type: 'text', text }] }]
+      }),
+      signal: AbortSignal.timeout(28000)
+    });
+  } catch (_) {
+    return { status: 502, body: { error: 'The food recognition service did not answer in time. Try again.' } };
+  }
+  if (up.status === 401 || up.status === 403) return { status: 503, body: { error: 'The API key was rejected. Check ANTHROPIC_API_KEY in Vercel.' } };
+  if (up.status === 429) return { status: 429, body: { error: 'The recognition service is busy. Try again in a minute.' } };
+  if (!up.ok) return { status: 502, body: { error: 'The food recognition service had a problem. Try again.' } };
+  let data;
+  try {
+    data = await up.json();
+  } catch (_) {
+    return { status: 502, body: { error: 'The answer was not readable. Try again.' } };
+  }
+  const out = readTool(data);
+  if (!out) return { status: 502, body: { error: 'Could not make sense of that photo. Try a clearer one.' } };
+  return { status: 200, body: out };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('allow', 'POST');
     return send(res, 405, { error: 'Use POST.' });
   }
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) return send(res, 503, { error: 'Photo logging is not switched on yet. Add ANTHROPIC_API_KEY in your Vercel project settings.' });
+  const gKey = process.env.GEMINI_API_KEY;
+  const aKey = process.env.ANTHROPIC_API_KEY;
+  if (!gKey && !aKey) return send(res, 503, { error: 'Photo logging is not switched on yet. Add GEMINI_API_KEY (free) in your Vercel project settings.' });
 
   const need = process.env.ACCESS_CODE;
   if (need && !safeEqual(req.headers['x-tally-code'] || '', need)) return send(res, 401, { error: 'That photo logging code is not right. Check it in the Me tab.' });
@@ -118,36 +230,6 @@ export default async function handler(req, res) {
   const meal = MEALS.includes(body.meal) ? body.meal : '';
   const text = `Identify and estimate this ${meal ? meal.toLowerCase() : 'meal'}.${hint ? `\nNote from the person eating it: ${hint}` : ''}`;
 
-  let up;
-  try {
-    up = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: MODEL(),
-        max_tokens: 1500,
-        system: SYSTEM,
-        tools: [TOOL],
-        tool_choice: { type: 'tool', name: 'log_meal' },
-        messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } }, { type: 'text', text }] }]
-      }),
-      signal: AbortSignal.timeout(28000)
-    });
-  } catch (e) {
-    return send(res, 502, { error: 'The food recognition service did not answer in time. Try again.' });
-  }
-
-  if (up.status === 401 || up.status === 403) return send(res, 503, { error: 'The API key was rejected. Check ANTHROPIC_API_KEY in Vercel.' });
-  if (up.status === 429) return send(res, 429, { error: 'The recognition service is busy. Try again in a minute.' });
-  if (!up.ok) return send(res, 502, { error: 'The food recognition service had a problem. Try again.' });
-
-  let data;
-  try {
-    data = await up.json();
-  } catch (_) {
-    return send(res, 502, { error: 'The answer was not readable. Try again.' });
-  }
-  const out = readTool(data);
-  if (!out) return send(res, 502, { error: 'Could not make sense of that photo. Try a clearer one.' });
-  return send(res, 200, out);
+  const r = gKey ? await viaGemini(gKey, image, text) : await viaClaude(aKey, image, text);
+  return send(res, r.status, r.body);
 }
