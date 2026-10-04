@@ -198,12 +198,18 @@ async function viaClaude(key, image, text) {
   return { status: 200, body: out };
 }
 
+// Be forgiving about the variable name: any variable that starts with "gemini" and holds a key works.
+function envLike(re) {
+  const name = Object.keys(process.env).find((k) => re.test(k) && process.env[k]);
+  return name ? process.env[name] : '';
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('allow', 'POST');
     return send(res, 405, { error: 'Use POST.' });
   }
-  const gKey = process.env.GEMINI_API_KEY;
+  const gKey = process.env.GEMINI_API_KEY || envLike(/^gemini.*key|^gemini.*kalorie/i);
   const aKey = process.env.ANTHROPIC_API_KEY;
   if (!gKey && !aKey) return send(res, 503, { error: 'Photo logging is not switched on yet. Add GEMINI_API_KEY (free) in your Vercel project settings.' });
 

@@ -167,6 +167,10 @@ const reply = (status, json) => async () => ({ ok: status >= 200 && status < 300
   assert.equal(readGemini({ candidates: [{ content: { parts: [{ text: '```json\n{"is_food":false,"items":[]}\n```' }] } }] }).is_food, false);
   assert.equal(readGemini({}), null);
   delete process.env.GEMINI_API_KEY;
+  process.env.Gemini_API_Kalorie = 'g-odd-name';
+  await handler(req(), mkRes());
+  assert.equal(sent.init.headers['x-goog-api-key'], 'g-odd-name');
+  delete process.env.Gemini_API_Kalorie;
   ok('api: free Gemini path, model override and error mapping');
 }
 {
