@@ -204,7 +204,24 @@ function envLike(re) {
   return name ? process.env[name] : '';
 }
 
+// GET reports whether a key is set and accepted. It asks the provider to list models, which is free and uses no quota.
+async function health(res) {
+  const gKey = process.env.GEMINI_API_KEY || envLike(/^gemini.*key|^gemini.*kalorie/i);
+  const aKey = process.env.ANTHROPIC_API_KEY;
+  if (!gKey && !aKey) return send(res, 200, { configured: false, hint: 'No Gemini or Anthropic key was found in the Vercel environment variables.' });
+  const provider = gKey ? 'gemini' : 'claude';
+  try {
+    const r = gKey
+      ? await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': gKey }, signal: AbortSignal.timeout(10000) })
+      : await fetch('https://api.anthropic.com/v1/models?limit=1', { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(10000) });
+    return send(res, 200, { configured: true, provider, keyValid: r.ok, providerStatus: r.status, accessCodeSet: !!process.env.ACCESS_CODE });
+  } catch (_) {
+    return send(res, 200, { configured: true, provider, keyValid: null, hint: 'Could not reach the provider to test the key.' });
+  }
+}
+
 export default async function handler(req, res) {
+  if (req.method === 'GET') return health(res);
   if (req.method !== 'POST') {
     res.setHeader('allow', 'POST');
     return send(res, 405, { error: 'Use POST.' });

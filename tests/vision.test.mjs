@@ -61,9 +61,13 @@ const reply = (status, json) => async () => ({ ok: status >= 200 && status < 300
   await handler(req(), r);
   assert.equal(r.code, 503);
   r = mkRes();
-  await handler(req({ method: 'GET' }), r);
+  await handler(req({ method: 'PUT' }), r);
   assert.equal(r.code, 405);
-  ok('api: missing key gives 503, GET gives 405');
+  r = mkRes();
+  await handler(req({ method: 'GET' }), r);
+  assert.equal(r.code, 200);
+  assert.equal(r.body.configured, false);
+  ok('api: missing key gives 503, PUT 405, GET reports not configured');
 }
 {
   process.env.ANTHROPIC_API_KEY = 'sk-test';
@@ -178,6 +182,25 @@ const reply = (status, json) => async () => ({ ok: status >= 200 && status < 300
   assert.equal(sent.init.headers['x-goog-api-key'], 'g-odd-name');
   delete process.env.Gemini_API_Kalorie;
   ok('api: free Gemini path, model override and error mapping');
+}
+{
+  process.env.GEMINI_API_KEY = 'g-health';
+  let seen;
+  globalThis.fetch = async (url, init) => {
+    seen = { url, init };
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  let r = mkRes();
+  await handler(req({ method: 'GET' }), r);
+  assert.deepEqual([r.body.configured, r.body.provider, r.body.keyValid], [true, 'gemini', true]);
+  assert.ok(seen.url.includes('/v1beta/models'));
+  assert.equal(JSON.stringify(r.body).includes('g-health'), false);
+  globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({}) });
+  r = mkRes();
+  await handler(req({ method: 'GET' }), r);
+  assert.equal(r.body.keyValid, false);
+  delete process.env.GEMINI_API_KEY;
+  ok('api: health check validates the key without leaking it');
 }
 {
   assert.equal(readTool({ content: [] }), null);

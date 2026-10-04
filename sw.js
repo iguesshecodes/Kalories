@@ -1,5 +1,5 @@
 // Offline shell. Bump VERSION when you ship changes so phones pick them up.
-const VERSION = 'tally-v2';
+const VERSION = 'tally-v3';
 const CORE = [
   './',
   'index.html',
@@ -43,6 +43,7 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  if (url.pathname.startsWith('/api/')) return; // never cache the server function
   if (url.origin !== self.location.origin) return; // food lookups always go to the network
   e.respondWith(
     caches.open(VERSION).then(async (cache) => {

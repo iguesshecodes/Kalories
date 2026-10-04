@@ -194,6 +194,7 @@ function meView() {
       <div class="sec-h"><h2>Photo logging</h2></div>
       <p class="why">Tap the camera button, take a photo of your plate and Tally lists each food with a portion and calories. You check it, then log it in one tap. The photo is sent to your own Tally server to be read and is not stored.</p>
       <label class="setrow field" style="margin:0;display:block"><span class="label">Photo logging code (only if you set one)</span><input class="input" type="password" autocomplete="off" data-change="code" value="${esc(s.settings.accessCode || '')}" placeholder="Leave empty if none"></label>
+      <p style="margin-top:12px"><button type="button" class="btn quiet" data-act="check-photo">Check photo logging</button></p>
     </section>
     <section class="sec">
       <div class="sec-h"><h2>Your data</h2></div>
@@ -223,6 +224,19 @@ handlers['day-today'] = () => {
   render();
 };
 handlers['add-open'] = (el) => openAdd(el.dataset.meal || null, dateNow());
+handlers['check-photo'] = async () => {
+  toast('Checking photo logging');
+  try {
+    const r = await fetch('/api/analyze', { cache: 'no-store' });
+    const j = await r.json();
+    if (!j.configured) toast('Not set up yet. No key was found in Vercel.');
+    else if (j.keyValid) toast('Photo logging is ready' + (j.accessCodeSet ? '. Remember your code.' : ''));
+    else if (j.keyValid === false) toast('Google or Anthropic rejected the key. Paste a fresh one in Vercel.');
+    else toast('Key found, but I could not test it right now.');
+  } catch (e) {
+    toast('Could not reach the server. Check your connection.');
+  }
+};
 handlers['snap'] = () => {
   const i = document.getElementById('snap');
   if (i) i.click();
