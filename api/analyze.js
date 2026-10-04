@@ -4,7 +4,7 @@
 //   ANTHROPIC_API_KEY   Paid key from console.anthropic.com. Used if there is no Gemini key.
 //
 // Optional environment variables
-//   GEMINI_MODEL    Override the Gemini model. Defaults to gemini-2.5-flash.
+//   GEMINI_MODEL    Force one Gemini model. By default the newest Flash model your key can use is picked automatically.
 //   ACCESS_CODE     If set, the app must send the same code (Me tab, "Photo logging code"). Strongly recommended
 //                   because your link is public and every photo costs a little.
 //   ANALYZE_MODEL   Override the model. Defaults to claude-sonnet-5-5.
@@ -132,37 +132,77 @@ export function readGemini(data) {
   return { is_food: j.is_food !== false, items: Array.isArray(j.items) ? j.items : [], notes: typeof j.notes === 'string' ? j.notes : '' };
 }
 
+// Find current Flash models this key can use, newest first. Model names change over time, so we ask Google.
+let modelCache = { at: 0, list: null };
+export function _resetModelCache() {
+  modelCache = { at: 0, list: null };
+}
+const FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash'];
+
+export function rankModels(models) {
+  const ok = (models || [])
+    .filter((m) => m && typeof m.name === 'string' && (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => m.name.replace(/^models\//, ''))
+    .map((n) => ({ n, m: /^gemini-(\d+)(?:\.(\d+))?-flash$/.exec(n) }))
+    .filter((x) => x.m)
+    .map((x) => ({ n: x.n, v: Number(x.m[1]) * 1000 + Number(x.m[2] || 0) }))
+    .sort((p, q) => q.v - p.v)
+    .map((x) => x.n);
+  return ok;
+}
+
+async function geminiModels(key) {
+  if (process.env.GEMINI_MODEL) return [process.env.GEMINI_MODEL];
+  if (modelCache.list && Date.now() - modelCache.at < 6 * 3600000) return modelCache.list;
+  let list = [];
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key }, signal: AbortSignal.timeout(8000) });
+    if (r.ok) list = rankModels((await r.json()).models);
+  } catch (_) {}
+  list = [...list.slice(0, 3), ...FALLBACK_MODELS.filter((m) => !list.slice(0, 3).includes(m))];
+  modelCache = { at: Date.now(), list };
+  return list;
+}
+
 // Each provider returns { status, body } where body is { error } or the parsed meal.
 async function viaGemini(key, image, text) {
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-  let up;
-  try {
-    up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/jpeg', data: image } }, { text }] }],
-        generationConfig: { responseMimeType: 'application/json', responseSchema: GEMINI_SCHEMA, temperature: 0.2, maxOutputTokens: 4096 }
-      }),
-      signal: AbortSignal.timeout(28000)
-    });
-  } catch (_) {
-    return { status: 502, body: { error: 'The food recognition service did not answer in time. Try again.' } };
+  const models = await geminiModels(key);
+  let last = null;
+  for (const model of models) {
+    let up;
+    try {
+      up = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/jpeg', data: image } }, { text }] }],
+          generationConfig: { responseMimeType: 'application/json', responseSchema: GEMINI_SCHEMA, maxOutputTokens: 8192 }
+        }),
+        signal: AbortSignal.timeout(26000)
+      });
+    } catch (_) {
+      return { status: 502, body: { error: 'The food recognition service did not answer in time. Try again.' } };
+    }
+    if (up.status === 404) {
+      last = { status: 503, body: { error: 'No current Gemini Flash model was found for this key. Set GEMINI_MODEL in Vercel to a model name from aistudio.google.com.' } };
+      modelCache = { at: 0, list: null };
+      continue;
+    }
+    if (up.status === 429) return { status: 429, body: { error: 'The free daily limit for photo reading is used up or the service is busy. Try again later, or add food by searching.' } };
+    if (up.status === 400 || up.status === 401 || up.status === 403) return { status: 503, body: { error: 'Google rejected the request. Check the key in Vercel, then try again.' } };
+    if (!up.ok) return { status: 502, body: { error: 'The food recognition service had a problem. Try again.' } };
+    let data;
+    try {
+      data = await up.json();
+    } catch (_) {
+      return { status: 502, body: { error: 'The answer was not readable. Try again.' } };
+    }
+    const out = readGemini(data);
+    if (!out) return { status: 502, body: { error: 'Could not make sense of that photo. Try a clearer one.' } };
+    return { status: 200, body: out };
   }
-  if (up.status === 429) return { status: 429, body: { error: 'The free daily limit for photo reading is used up or the service is busy. Try again later, or add food by searching.' } };
-  if (up.status === 400 || up.status === 401 || up.status === 403) return { status: 503, body: { error: 'Google rejected the key. Check GEMINI_API_KEY in Vercel.' } };
-  if (up.status === 404) return { status: 503, body: { error: 'That Gemini model name was not found. Set GEMINI_MODEL in Vercel to a current Flash model.' } };
-  if (!up.ok) return { status: 502, body: { error: 'The food recognition service had a problem. Try again.' } };
-  let data;
-  try {
-    data = await up.json();
-  } catch (_) {
-    return { status: 502, body: { error: 'The answer was not readable. Try again.' } };
-  }
-  const out = readGemini(data);
-  if (!out) return { status: 502, body: { error: 'Could not make sense of that photo. Try a clearer one.' } };
-  return { status: 200, body: out };
+  return last || { status: 503, body: { error: 'No Gemini model available.' } };
 }
 
 async function viaClaude(key, image, text) {
@@ -214,7 +254,8 @@ async function health(res) {
     const r = gKey
       ? await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1', { headers: { 'x-goog-api-key': gKey }, signal: AbortSignal.timeout(10000) })
       : await fetch('https://api.anthropic.com/v1/models?limit=1', { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(10000) });
-    return send(res, 200, { configured: true, provider, keyValid: r.ok, providerStatus: r.status, accessCodeSet: !!process.env.ACCESS_CODE });
+    const model = gKey && r.ok ? (await geminiModels(gKey))[0] : undefined;
+    return send(res, 200, { configured: true, provider, keyValid: r.ok, providerStatus: r.status, model, accessCodeSet: !!process.env.ACCESS_CODE });
   } catch (_) {
     return send(res, 200, { configured: true, provider, keyValid: null, hint: 'Could not reach the provider to test the key.' });
   }

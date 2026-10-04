@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { cleanItems, sumItems, toEntry, itemTotals } from '../js/vision.js';
-import handler, { readTool, readGemini, limited } from '../api/analyze.js';
+import handler, { readTool, readGemini, limited, rankModels, _resetModelCache } from '../api/analyze.js';
 
 let n = 0;
 const ok = (name) => console.log('ok', name) || n++;
@@ -137,51 +137,85 @@ const reply = (status, json) => async () => ({ ok: status >= 200 && status < 300
   ok('api: upstream errors map to clear statuses');
 }
 {
-  // free Gemini path takes priority when its key is set
+  // free Gemini path: picks the newest stable Flash model the key can use
   process.env.GEMINI_API_KEY = 'g-test';
-  let sent;
+  _resetModelCache();
+  const gm = (name) => ({ name: 'models/' + name, supportedGenerationMethods: ['generateContent'] });
+  const MODELS = [gm('gemini-2.5-flash'), gm('gemini-3.8-flash'), gm('gemini-3.8-flash-lite'), gm('gemini-3.7-flash-preview'), gm('gemini-2.5-flash-image'), { name: 'models/gemini-4.0-flash', supportedGenerationMethods: ['embedContent'] }];
+  assert.deepEqual(rankModels(MODELS), ['gemini-3.8-flash', 'gemini-2.5-flash']);
   const meal = { is_food: true, items: [{ name: 'Idli', portion: '3 idlis', grams: 120, kcal: 156, protein_g: 5, carbs_g: 30, fat_g: 1, confidence: 'high' }], notes: '' };
+  const calls = [];
+  let missing = new Set();
   globalThis.fetch = async (url, init) => {
-    sent = { url, init };
+    calls.push({ url, init });
+    if (url.includes('/v1beta/models?')) return { ok: true, status: 200, json: async () => ({ models: MODELS }) };
+    const name = /models\/([^:]+):generateContent/.exec(url)[1];
+    if (missing.has(name)) return { ok: false, status: 404, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(meal) }] } }] }) };
   };
   let r = mkRes();
   await handler(req(), r);
   assert.equal(r.code, 200);
   assert.equal(r.body.items[0].name, 'Idli');
-  assert.ok(sent.url.includes('generativelanguage.googleapis.com') && sent.url.includes('gemini-2.5-flash'));
-  assert.equal(sent.init.headers['x-goog-api-key'], 'g-test');
-  const b = JSON.parse(sent.init.body);
+  const gen = calls.filter((c) => c.url.includes(':generateContent'));
+  assert.ok(gen[0].url.includes('gemini-3.8-flash:'));
+  assert.equal(gen[0].init.headers['x-goog-api-key'], 'g-test');
+  const b = JSON.parse(gen[0].init.body);
   assert.equal(b.contents[0].parts[0].inlineData.mimeType, 'image/jpeg');
   assert.equal(b.generationConfig.responseMimeType, 'application/json');
+  // first model missing -> falls through to the next one
+  _resetModelCache();
+  calls.length = 0;
+  missing = new Set(['gemini-3.8-flash']);
+  r = mkRes();
+  await handler(req(), r);
+  assert.equal(r.code, 200);
+  assert.ok(calls.filter((c) => c.url.includes(':generateContent')).length >= 2);
+  // every candidate missing -> clear setup error
+  _resetModelCache();
+  missing = new Set(['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest']);
+  r = mkRes();
+  await handler(req(), r);
+  assert.equal(r.code, 503);
+  missing = new Set();
+  // forced model wins
+  _resetModelCache();
   process.env.GEMINI_MODEL = 'gemini-custom';
+  calls.length = 0;
   await handler(req(), mkRes());
-  assert.ok(sent.url.includes('gemini-custom'));
+  assert.ok(calls.some((c) => c.url.includes('gemini-custom:generateContent')));
   delete process.env.GEMINI_MODEL;
-  for (const [st, want] of [[429, 429], [403, 503], [400, 503], [404, 503], [500, 502]]) {
-    globalThis.fetch = async () => ({ ok: false, status: st, json: async () => ({}) });
+  // provider errors
+  for (const [st, want] of [[429, 429], [403, 503], [400, 503], [500, 502]]) {
+    _resetModelCache();
+    globalThis.fetch = async (url) => (url.includes('/v1beta/models?') ? { ok: true, status: 200, json: async () => ({ models: MODELS }) } : { ok: false, status: st, json: async () => ({}) });
     r = mkRes();
     await handler(req(), r);
     assert.equal(r.code, want, 'gemini status ' + st);
   }
-  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'not json' }] } }] }) });
+  globalThis.fetch = async (url) => (url.includes('/v1beta/models?') ? { ok: true, status: 200, json: async () => ({ models: MODELS }) } : { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'not json' }] } }] }) });
+  _resetModelCache();
   r = mkRes();
   await handler(req(), r);
   assert.equal(r.code, 502);
   assert.equal(readGemini({ candidates: [{ content: { parts: [{ text: '```json\n{"is_food":false,"items":[]}\n```' }] } }] }).is_food, false);
   assert.equal(readGemini({}), null);
+  // odd variable name still works
   delete process.env.GEMINI_API_KEY;
   process.env.Gemini_API_Kalorie = 'g-odd-name';
+  _resetModelCache();
+  calls.length = 0;
   globalThis.fetch = async (url, init) => {
-    sent = { url, init };
+    calls.push({ url, init });
+    if (url.includes('/v1beta/models?')) return { ok: true, status: 200, json: async () => ({ models: MODELS }) };
     return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(meal) }] } }] }) };
   };
   r = mkRes();
   await handler(req(), r);
   assert.equal(r.code, 200);
-  assert.equal(sent.init.headers['x-goog-api-key'], 'g-odd-name');
+  assert.equal(calls.at(-1).init.headers['x-goog-api-key'], 'g-odd-name');
   delete process.env.Gemini_API_Kalorie;
-  ok('api: free Gemini path, model override and error mapping');
+  ok('api: free Gemini path picks a current model, falls back, and maps errors');
 }
 {
   process.env.GEMINI_API_KEY = 'g-health';
