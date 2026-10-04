@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tally</title>
+<meta name="description" content="A calorie and macro tracker built around Indian food and your own body. Your data stays on your device.">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tally">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preload" href="fonts/archivo.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#view">Skip to content</a>
+<div id="app">
+  <main id="view" tabindex="-1"></main>
+  <input type="file" id="snap" accept="image/*" capture="environment" hidden aria-hidden="true" tabindex="-1">
+  <nav id="tabs" aria-label="Main"></nav>
+</div>
+<dialog id="sheet" aria-labelledby="sheet-title"></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<noscript><p style="padding:24px;font-family:sans-serif">Tally needs JavaScript to run. It stores everything on your device.</p></noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
