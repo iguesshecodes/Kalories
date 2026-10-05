@@ -283,8 +283,9 @@ async function selftest(req, res) {
   if (!gKey && !aKey) return send(res, 200, { ok: false, error: 'No key found.' });
   const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
   if (limited('selftest:' + ip, Date.now(), 10)) return send(res, 429, { ok: false, error: 'Too many self tests this hour.' });
+  const t0 = Date.now();
   const r = gKey ? await viaGemini(gKey, TINY_JPEG, 'Identify this meal.') : await viaClaude(aKey, TINY_JPEG, 'Identify this meal.');
-  return send(res, 200, { ok: r.status === 200, status: r.status, model: r.body.model, error: r.body.error, detail: r.body.detail, parsedItems: r.body.items ? r.body.items.length : undefined });
+  return send(res, 200, { ok: r.status === 200, ms: Date.now() - t0, status: r.status, model: r.body.model, error: r.body.error, detail: r.body.detail, parsedItems: r.body.items ? r.body.items.length : undefined });
 }
 
 export default async function handler(req, res) {
