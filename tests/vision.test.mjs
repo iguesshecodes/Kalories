@@ -237,6 +237,24 @@ const reply = (status, json) => async () => ({ ok: status >= 200 && status < 300
   ok('api: health check validates the key without leaking it');
 }
 {
+  // selftest reports the real call result, and errors carry Google's message without the key
+  process.env.GEMINI_API_KEY = 'g-secret-key';
+  _resetModelCache();
+  const meal = { is_food: false, items: [] };
+  globalThis.fetch = async (url) => (url.includes('/v1beta/models?') ? { ok: true, status: 200, json: async () => ({ models: [{ name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent'] }] }) } : { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(meal) }] } }] }) });
+  let r = mkRes();
+  await handler(req({ method: 'GET', url: '/api/analyze?selftest=1' }), r);
+  assert.deepEqual([r.body.ok, r.body.model, r.body.parsedItems], [true, 'gemini-3.8-flash', 0]);
+  _resetModelCache();
+  globalThis.fetch = async (url) => (url.includes('/v1beta/models?') ? { ok: true, status: 200, json: async () => ({ models: [{ name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent'] }] }) } : { ok: false, status: 400, json: async () => ({ error: { message: 'Bad schema near g-secret-key field' } }) });
+  r = mkRes();
+  await handler(req({ method: 'GET', url: '/api/analyze?selftest=1' }), r);
+  assert.equal(r.body.ok, false);
+  assert.ok(r.body.detail.includes('Bad schema') && !r.body.detail.includes('g-secret-key'));
+  delete process.env.GEMINI_API_KEY;
+  ok('api: selftest shows the real result and hides the key');
+}
+{
   assert.equal(readTool({ content: [] }), null);
   assert.equal(readTool({ content: [{ type: 'tool_use', name: 'log_meal', input: { is_food: false, items: [] } }] }).is_food, false);
   const t0 = 1_000_000;

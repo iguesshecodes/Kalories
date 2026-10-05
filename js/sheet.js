@@ -290,6 +290,7 @@ function renderPhoto() {
     const text = m && m[1] ? m[1] : ph.err || 'Try again, or add the food by searching.';
     body = `${ph.thumb ? `<div class="shot"><img src="${ph.thumb}" alt="Your meal"></div>` : ''}
       <p class="err" role="alert" style="margin-top:14px"><b>${esc(title)}</b> ${esc(text)}</p>
+      ${ph.detail ? `<p class="hint" style="word-break:break-word">Technical detail: ${esc(ph.detail)}</p>` : ''}
       ${photoActions(ph.b64 && ph.code !== 'nofood' ? `<button type="button" class="btn primary" data-act="photo-retry">Try again</button>` : '')}`;
   } else {
     const items = ph.items;
@@ -352,16 +353,17 @@ async function runPhoto(file) {
     render();
   } catch (e) {
     if (!live()) return;
-    if (e instanceof VisionError) return failPhoto(e.code, e.message);
+    if (e instanceof VisionError) return failPhoto(e.code, e.message, e.detail);
     failPhoto('server', e && e.message);
   }
 }
 
-function failPhoto(code, msg) {
+function failPhoto(code, msg, detail) {
   const ph = sh.photo;
   ph.status = 'error';
   ph.code = code;
   ph.err = msg || '';
+  ph.detail = detail || '';
   render();
 }
 

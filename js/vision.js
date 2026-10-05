@@ -141,7 +141,9 @@ export async function analyzePhoto({ base64, hint, meal, code }, { signal, endpo
   } catch (_) {}
   if (!res.ok) {
     const map = { 401: 'code', 413: 'big', 429: 'busy', 503: 'setup' };
-    throw new VisionError(map[res.status] || 'server', (body && body.error) || 'Something went wrong on the server.');
+    const err = new VisionError(map[res.status] || 'server', (body && body.error) || 'Something went wrong on the server.');
+    err.detail = (body && body.detail) || (body ? '' : `HTTP ${res.status}`);
+    throw err;
   }
   if (!body || typeof body !== 'object') throw new VisionError('server', 'The answer was not readable.');
   return {

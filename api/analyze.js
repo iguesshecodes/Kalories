@@ -164,6 +164,16 @@ async function geminiModels(key) {
   return list;
 }
 
+async function errDetail(up, key) {
+  try {
+    const j = await up.json();
+    const m = j && j.error && j.error.message ? String(j.error.message) : '';
+    return m.split(key).join('[key]').slice(0, 300);
+  } catch (_) {
+    return '';
+  }
+}
+
 // Each provider returns { status, body } where body is { error } or the parsed meal.
 async function viaGemini(key, image, text) {
   const models = await geminiModels(key);
@@ -184,14 +194,17 @@ async function viaGemini(key, image, text) {
     } catch (_) {
       return { status: 502, body: { error: 'The food recognition service did not answer in time. Try again.' } };
     }
-    if (up.status === 404) {
-      last = { status: 503, body: { error: 'No current Gemini Flash model was found for this key. Set GEMINI_MODEL in Vercel to a model name from aistudio.google.com.' } };
-      modelCache = { at: 0, list: null };
-      continue;
+    if (!up.ok) {
+      const detail = await errDetail(up, key);
+      if (up.status === 404) {
+        last = { status: 503, body: { error: 'No current Gemini Flash model was found for this key. Set GEMINI_MODEL in Vercel to a model name from aistudio.google.com.', detail } };
+        modelCache = { at: 0, list: null };
+        continue;
+      }
+      if (up.status === 429) return { status: 429, body: { error: 'The free daily limit for photo reading is used up or the service is busy. Try again later, or add food by searching.', detail } };
+      if (up.status === 400 || up.status === 401 || up.status === 403) return { status: 503, body: { error: 'Google rejected the request. Check the key in Vercel, then try again.', detail } };
+      return { status: 502, body: { error: 'The food recognition service had a problem. Try again.', detail } };
     }
-    if (up.status === 429) return { status: 429, body: { error: 'The free daily limit for photo reading is used up or the service is busy. Try again later, or add food by searching.' } };
-    if (up.status === 400 || up.status === 401 || up.status === 403) return { status: 503, body: { error: 'Google rejected the request. Check the key in Vercel, then try again.' } };
-    if (!up.ok) return { status: 502, body: { error: 'The food recognition service had a problem. Try again.' } };
     let data;
     try {
       data = await up.json();
@@ -199,8 +212,8 @@ async function viaGemini(key, image, text) {
       return { status: 502, body: { error: 'The answer was not readable. Try again.' } };
     }
     const out = readGemini(data);
-    if (!out) return { status: 502, body: { error: 'Could not make sense of that photo. Try a clearer one.' } };
-    return { status: 200, body: out };
+    if (!out) return { status: 502, body: { error: 'Could not make sense of that photo. Try a clearer one.', detail: JSON.stringify(data).slice(0, 300) } };
+    return { status: 200, body: { ...out, model } };
   }
   return last || { status: 503, body: { error: 'No Gemini model available.' } };
 }
@@ -261,8 +274,27 @@ async function health(res) {
   }
 }
 
+const TINY_JPEG = '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';
+
+// GET ?selftest=1 sends a tiny dummy picture through the real recognition call and reports what happened.
+async function selftest(req, res) {
+  const gKey = process.env.GEMINI_API_KEY || envLike(/^gemini.*key|^gemini.*kalorie/i);
+  const aKey = process.env.ANTHROPIC_API_KEY;
+  if (!gKey && !aKey) return send(res, 200, { ok: false, error: 'No key found.' });
+  const ip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
+  if (limited('selftest:' + ip, Date.now(), 10)) return send(res, 429, { ok: false, error: 'Too many self tests this hour.' });
+  const r = gKey ? await viaGemini(gKey, TINY_JPEG, 'Identify this meal.') : await viaClaude(aKey, TINY_JPEG, 'Identify this meal.');
+  return send(res, 200, { ok: r.status === 200, status: r.status, model: r.body.model, error: r.body.error, detail: r.body.detail, parsedItems: r.body.items ? r.body.items.length : undefined });
+}
+
 export default async function handler(req, res) {
-  if (req.method === 'GET') return health(res);
+  if (req.method === 'GET') {
+    let q = '';
+    try {
+      q = new URL(req.url || '/', 'http://x').searchParams.get('selftest') || '';
+    } catch (_) {}
+    return q ? selftest(req, res) : health(res);
+  }
   if (req.method !== 'POST') {
     res.setHeader('allow', 'POST');
     return send(res, 405, { error: 'Use POST.' });
